@@ -27,7 +27,6 @@ import android.net.Uri;
 import android.os.AsyncTask;
 import android.telephony.TelephonyManager;
 import android.util.Log;
-import android.widget.TextView;
 
 public class SimpleDhtProvider extends ContentProvider {
 
@@ -93,26 +92,7 @@ public class SimpleDhtProvider extends ContentProvider {
                 outputStream.close();
             }
             else if (genHash(filename).compareTo(genHash(portString)) > 0 || genHash(filename).compareTo(genHash(prev_id)) <= 0){
-                try {
-                    String REMOTE_PORT = String.valueOf((Integer.parseInt(next_id) * 2));
-                    Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
-                            Integer.parseInt(REMOTE_PORT));
-
-                    Log.d(TAG, "Sending insert to other AVD");
-                    String msgToSend = portString + "###" + "insert" + "###" + filename + "###" + content;
-
-                    OutputStream outputStream = socket.getOutputStream();
-                    PrintWriter printWriter = new PrintWriter(outputStream, true);
-                    printWriter.print(msgToSend);
-                    printWriter.flush();
-
-                    socket.close();
-                } catch (UnknownHostException e) {
-                    Log.e(TAG, "ClientTask UnknownHostException");
-                } catch (IOException e) {
-                    e.printStackTrace();
-                    Log.e(TAG, "ClientTask socket IOException");
-                }
+                new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, portString, "forwardInsert", filename, content);
             }
             else {
                 FileOutputStream outputStream = getContext().openFileOutput(filename, Context.MODE_PRIVATE);
@@ -122,7 +102,7 @@ public class SimpleDhtProvider extends ContentProvider {
         }
         catch (Exception e) {
             e.printStackTrace();
-            Log.d(TAG, "File write failed");
+            Log.d(TAG, "File write failed: " + filename);
         }
 
         return uri;
@@ -248,7 +228,6 @@ public class SimpleDhtProvider extends ContentProvider {
                     else if (msg_split[1].equals("updateNeighbours")){
                         prev_id = !msg_split[2].equals("NULL") ? msg_split[2] : prev_id;
                         next_id = !msg_split[3].equals("NULL") ? msg_split[3] : next_id;
-                        Log.d(TAG, "PrevID: " + prev_id + " CurID: " + portString + " NextID: " + next_id);
                     }
                     else if (msg_split[1].equals("insert")){
                         publishProgress(msgReceived);
@@ -350,23 +329,41 @@ public class SimpleDhtProvider extends ContentProvider {
             String REMOTE_PORT = "11108";
 
             try {
-                Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
-                        Integer.parseInt(REMOTE_PORT));
+                if (msgs[1].equals("addNewAVD")){
+                    Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
+                            Integer.parseInt(REMOTE_PORT));
 
-                String msgToSend = msgs[0] + "###" + msgs[1];
+                    String msgToSend = msgs[0] + "###" + msgs[1];
 
-                OutputStream outputStream = socket.getOutputStream();
-                PrintWriter printWriter = new PrintWriter(outputStream, true);
-                printWriter.print(msgToSend);
-                printWriter.flush();
+                    OutputStream outputStream = socket.getOutputStream();
+                    PrintWriter printWriter = new PrintWriter(outputStream, true);
+                    printWriter.print(msgToSend);
+                    printWriter.flush();
 
-                socket.close();
+                    socket.close();
+                }
+                else if (msgs[1].equals("forwardInsert")){
+                    REMOTE_PORT = String.valueOf((Integer.parseInt(next_id) * 2));
+                    Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
+                            Integer.parseInt(REMOTE_PORT));
+
+                    String msgToSend = portString + "###" + "insert" + "###" + msgs[2] + "###" + msgs[3];
+
+                    OutputStream outputStream = socket.getOutputStream();
+                    PrintWriter printWriter = new PrintWriter(outputStream, true);
+                    printWriter.print(msgToSend);
+                    printWriter.flush();
+
+                    socket.close();
+                }
             } catch (UnknownHostException e) {
                 Log.e(TAG, "ClientTask UnknownHostException");
             } catch (IOException e) {
                 e.printStackTrace();
                 Log.e(TAG, "ClientTask socket IOException");
             }
+
+
 
             return null;
         }
