@@ -295,6 +295,9 @@ public class SimpleDhtProvider extends ContentProvider {
         String keyValuePairs[] = msg_split[2].split(">>>");
 
         for (String keyValue : keyValuePairs){
+            if (keyValue.equals(null)){
+                continue;
+            }
             Log.d(TAG, "keyvalue: " + keyValue);
             String key = keyValue.split("<<<")[0];
             String value = keyValue.split("<<<")[1];
