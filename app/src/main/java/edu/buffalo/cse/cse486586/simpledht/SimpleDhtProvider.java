@@ -18,6 +18,11 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Formatter;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.Set;
+
 import android.content.ContentProvider;
 import android.content.ContentValues;
 import android.content.Context;
@@ -27,6 +32,12 @@ import android.net.Uri;
 import android.os.AsyncTask;
 import android.telephony.TelephonyManager;
 import android.util.Log;
+
+/*
+* Seperate key from value => <<<
+* Seperate key value pairs => >>>
+* Seperate different contexts => ###
+* */
 
 public class SimpleDhtProvider extends ContentProvider {
 
@@ -43,7 +54,13 @@ public class SimpleDhtProvider extends ContentProvider {
     private String prev_id;
     private String next_id;
 
+    Uri uri = new Uri.Builder().authority("edu.buffalo.cse.cse486586.simpledht.provider").scheme("content").build();
+
     ArrayList<AVD> AVD_List = new ArrayList<AVD>(5);
+
+    Map<String, String> queryResponse = new HashMap<String, String>();
+
+    boolean globalDumpComplete = false;
 
     public class AVD implements Comparable<AVD> {
 
@@ -206,6 +223,94 @@ public class SimpleDhtProvider extends ContentProvider {
         return null;
     }
 
+    public Void handleForwardQuery(String msgReceived){
+        String msg_split[] = msgReceived.split("###");
+        String selection = msg_split[2];
+
+        boolean isSelectionPresent = false;
+
+        try {
+            String listOfFiles[] = getContext().fileList();
+            for (String S : listOfFiles){
+                if (S.equals(selection)){
+                    isSelectionPresent = true;
+                    break;
+                }
+            }
+
+            if (isSelectionPresent){
+                // return the file with value
+                FileInputStream fileInputStream = getContext().openFileInput(selection);
+                BufferedReader bufferedReader = new BufferedReader(new InputStreamReader(fileInputStream));
+                String content = bufferedReader.readLine();
+                new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, msg_split[0], "queryResponse", selection, content);
+            }
+            else {
+                // Forward the query
+                new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, msg_split[0], "forwardQuery", selection);
+            }
+        }
+        catch (Exception e) {
+            Log.d(TAG, "File name failed "+selection);
+            Log.d(TAG, "Reading file failed "+ e.getLocalizedMessage());
+        }
+
+        return null;
+    }
+
+    public Void handleGlobalQuery(String msgReceived){
+        String msg_split[] = msgReceived.split("###");
+
+        try {
+            String keyValuePairs = "";
+            FileInputStream fileInputStream;
+            BufferedReader bufferedReader;
+            String content;
+
+            String listOfFiles[] = getContext().fileList();
+            for (String S : listOfFiles){
+                fileInputStream = getContext().openFileInput(S);
+                bufferedReader = new BufferedReader(new InputStreamReader(fileInputStream));
+                content = bufferedReader.readLine();
+                keyValuePairs = keyValuePairs + S + "<<<" + content + ">>>";
+            }
+
+            if (msg_split[0].equals(next_id)){
+                // Global query is complete
+                new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, msg_split[0], "globalQueryResponse", keyValuePairs, "globalQueryComplete");
+            }
+            else {
+                new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, msg_split[0], "globalQueryResponse", keyValuePairs, "globalQueryIncomplete");
+                new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, msg_split[0], msg_split[1]);
+            }
+        }
+        catch (Exception e) {
+            Log.d(TAG, "Global Query failed ");
+        }
+        return null;
+    }
+
+    public Void handleGlobalQueryResponse(String msgReceived){
+        String msg_split[] = msgReceived.split("###");
+        String keyValuePairs[] = msg_split[2].split(">>>");
+
+        for (String keyValue : keyValuePairs){
+            Log.d(TAG, "keyvalue: " + keyValue);
+            String key = keyValue.split("<<<")[0];
+            String value = keyValue.split("<<<")[1];
+            queryResponse.put(key, value);
+        }
+
+        if (msg_split[3].equals("globalQueryComplete")){
+            globalDumpComplete = true;
+            synchronized (queryResponse)
+            {
+                queryResponse.notifyAll();
+            }
+        }
+        return null;
+    }
+
     private class ServerTask extends AsyncTask<ServerSocket, String, Void> {
         @Override
         protected Void doInBackground(ServerSocket... sockets) {
@@ -229,7 +334,7 @@ public class SimpleDhtProvider extends ContentProvider {
                         prev_id = !msg_split[2].equals("NULL") ? msg_split[2] : prev_id;
                         next_id = !msg_split[3].equals("NULL") ? msg_split[3] : next_id;
                     }
-                    else if (msg_split[1].equals("insert")){
+                    else {
                         publishProgress(msgReceived);
                     }
 
@@ -246,11 +351,28 @@ public class SimpleDhtProvider extends ContentProvider {
             String msgReceived = strings[0].trim();
             String msg_split[] = msgReceived.split("###");
 
-            ContentValues contentValues = new ContentValues();
-            contentValues.put(KEY_FIELD, msg_split[2]);
-            contentValues.put(VALUE_FIELD, msg_split[3]);
-            Uri uri = new Uri.Builder().authority("edu.buffalo.cse.cse486586.simpledht.provider").scheme("content").build();
-            insert(uri, contentValues);
+            if (msg_split[1].equals("forwardInsert")){
+                ContentValues contentValues = new ContentValues();
+                contentValues.put(KEY_FIELD, msg_split[2]);
+                contentValues.put(VALUE_FIELD, msg_split[3]);
+                insert(uri, contentValues);
+            }
+            else if (msg_split[1].equals("forwardQuery")){
+                handleForwardQuery(msgReceived);
+            }
+            else if (msg_split[1].equals("queryResponse")){
+                queryResponse.put(msg_split[2], msg_split[3]);
+                synchronized (queryResponse)
+                {
+                    queryResponse.notifyAll();
+                }
+            }
+            else if (msg_split[1].equals("globalQuery")){
+                handleGlobalQuery(msgReceived);
+            }
+            else if (msg_split[1].equals("globalQueryResponse")){
+                handleGlobalQueryResponse(msgReceived);
+            }
 
             return;
         }
@@ -286,14 +408,54 @@ public class SimpleDhtProvider extends ContentProvider {
                     content = bufferedReader.readLine();
                     cursor.addRow(new String[] {S, content});
                 }
+                new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, portString, "globalQuery");
+                synchronized (queryResponse){
+                    while (globalDumpComplete == false){
+                        queryResponse.wait();
+                    }
+                    globalDumpComplete = false;
+                    for (Map.Entry<String, String> entry : queryResponse.entrySet())
+                    {
+                        cursor.addRow(new String[] {entry.getKey(), entry.getValue()});
+                    }
+                }
                 return cursor;
             }
             else {
-                fileInputStream = getContext().openFileInput(selection);
-                bufferedReader = new BufferedReader(new InputStreamReader(fileInputStream));
-                content = bufferedReader.readLine();
-                cursor.addRow(new String[] {selection, content});
-                return cursor;
+                try {
+                    boolean isSelectionPresent = false;
+                    String listOfFiles[] = getContext().fileList();
+                    for (String S : listOfFiles){
+                        if (S.equals(selection)){
+                            isSelectionPresent = true;
+                            break;
+                        }
+                    }
+
+                    if (isSelectionPresent){
+                        fileInputStream = getContext().openFileInput(selection);
+                        bufferedReader = new BufferedReader(new InputStreamReader(fileInputStream));
+                        content = bufferedReader.readLine();
+                        cursor.addRow(new String[] {selection, content});
+                        return cursor;
+                    }
+                    else {
+                        new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, portString, "forwardQuery", selection);
+                        synchronized (queryResponse){
+                            while (queryResponse.isEmpty()){
+                                queryResponse.wait();
+                            }
+                            content = queryResponse.get(selection);
+                            queryResponse.clear();
+                            cursor.addRow(new String[] {selection, content});
+                        }
+                        return cursor;
+                    }
+                }
+                catch (Exception e) {
+                    Log.d(TAG, "File name failed " + selection);
+                    Log.d(TAG, "Reading file failed " + e.getLocalizedMessage());
+                }
             }
         } catch (Exception e) {
             Log.d(TAG, "File name failed "+selection);
@@ -347,7 +509,7 @@ public class SimpleDhtProvider extends ContentProvider {
                     Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
                             Integer.parseInt(REMOTE_PORT));
 
-                    String msgToSend = portString + "###" + "insert" + "###" + msgs[2] + "###" + msgs[3];
+                    String msgToSend = portString + "###" + "forwardInsert" + "###" + msgs[2] + "###" + msgs[3];
 
                     OutputStream outputStream = socket.getOutputStream();
                     PrintWriter printWriter = new PrintWriter(outputStream, true);
@@ -356,15 +518,71 @@ public class SimpleDhtProvider extends ContentProvider {
 
                     socket.close();
                 }
+                else if (msgs[1].equals("forwardQuery")){
+                    REMOTE_PORT = String.valueOf((Integer.parseInt(next_id) * 2));
+                    Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
+                            Integer.parseInt(REMOTE_PORT));
+
+                    String msgToSend = msgs[0] + "###" + msgs[1] + "###" + msgs[2];
+
+                    OutputStream outputStream = socket.getOutputStream();
+                    PrintWriter printWriter = new PrintWriter(outputStream, true);
+                    printWriter.print(msgToSend);
+                    printWriter.flush();
+
+                    socket.close();
+                }
+                else if (msgs[1].equals("queryResponse")){
+                    REMOTE_PORT = String.valueOf((Integer.parseInt(msgs[0]) * 2));
+                    Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
+                            Integer.parseInt(REMOTE_PORT));
+
+                    String msgToSend = msgs[0] + "###" + msgs[1] + "###" + msgs[2] + "###" + msgs[3];
+
+                    OutputStream outputStream = socket.getOutputStream();
+                    PrintWriter printWriter = new PrintWriter(outputStream, true);
+                    printWriter.print(msgToSend);
+                    printWriter.flush();
+
+                    socket.close();
+                }
+                else if (msgs[1].equals("globalQuery")){
+                    REMOTE_PORT = String.valueOf((Integer.parseInt(next_id) * 2));
+                    Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
+                            Integer.parseInt(REMOTE_PORT));
+
+                    String msgToSend = msgs[0] + "###" + msgs[1];
+
+                    OutputStream outputStream = socket.getOutputStream();
+                    PrintWriter printWriter = new PrintWriter(outputStream, true);
+                    printWriter.print(msgToSend);
+                    printWriter.flush();
+
+                    socket.close();
+                }
+                else if (msgs[1].equals("globalQueryResponse")){
+                    REMOTE_PORT = String.valueOf((Integer.parseInt(msgs[0]) * 2));
+                    Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
+                            Integer.parseInt(REMOTE_PORT));
+
+                    String msgToSend = msgs[0] + "###" + msgs[1] + "###" + msgs[2] + "###" + msgs[3];
+
+                    OutputStream outputStream = socket.getOutputStream();
+                    PrintWriter printWriter = new PrintWriter(outputStream, true);
+                    printWriter.print(msgToSend);
+                    printWriter.flush();
+
+                    socket.close();
+                }
+                else {
+                    Log.d(TAG, "Something went wrong with clientTask logic.");
+                }
             } catch (UnknownHostException e) {
                 Log.e(TAG, "ClientTask UnknownHostException");
             } catch (IOException e) {
                 e.printStackTrace();
                 Log.e(TAG, "ClientTask socket IOException");
             }
-
-
-
             return null;
         }
 
