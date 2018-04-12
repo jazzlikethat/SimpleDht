@@ -81,6 +81,33 @@ public class SimpleDhtProvider extends ContentProvider {
     @Override
     public int delete(Uri uri, String selection, String[] selectionArgs) {
         // TODO Auto-generated method stub
+
+        String listOfFiles[] = getContext().fileList();
+        if (selection.equals("@") || selection.equals("*")){
+            for (String S : listOfFiles){
+                getContext().deleteFile(S);
+            }
+            if (selection.equals("*")){
+                new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, portString, "globalDelete");
+            }
+        }
+        else {
+            boolean isSelectionPresent = false;
+
+            for (String S : listOfFiles){
+                if (S.equals(selection)){
+                    isSelectionPresent = true;
+                    break;
+                }
+            }
+
+            if (isSelectionPresent){
+                getContext().deleteFile(selection);
+            }
+            else {
+                new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, portString, "deleteFile", selection);
+            }
+        }
         return 0;
     }
 
@@ -295,10 +322,9 @@ public class SimpleDhtProvider extends ContentProvider {
         String keyValuePairs[] = msg_split[2].split(">>>");
 
         for (String keyValue : keyValuePairs){
-            if (keyValue.equals(null)){
+            if (keyValue.equals(null) || keyValue.trim().equals("")){
                 continue;
             }
-            Log.d(TAG, "keyvalue: " + keyValue);
             String key = keyValue.split("<<<")[0];
             String value = keyValue.split("<<<")[1];
             queryResponse.put(key, value);
@@ -310,6 +336,22 @@ public class SimpleDhtProvider extends ContentProvider {
             {
                 queryResponse.notifyAll();
             }
+        }
+        return null;
+    }
+
+    public Void handleDeleteFile(String msgReceived){
+        String msg_split[] = msgReceived.split("###");
+        String selection = msg_split[2];
+        delete(uri, selection, null);
+        return null;
+    }
+
+    public Void handleGlobalDelete(String msgReceived){
+        String msg_split[] = msgReceived.split("###");
+        delete(uri, "@", null);
+        if (!msg_split[0].equals(next_id)){
+            new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, msg_split[0], "globalDelete");
         }
         return null;
     }
@@ -375,6 +417,12 @@ public class SimpleDhtProvider extends ContentProvider {
             }
             else if (msg_split[1].equals("globalQueryResponse")){
                 handleGlobalQueryResponse(msgReceived);
+            }
+            else if (msg_split[1].equals("deleteFile")){
+                handleDeleteFile(msgReceived);
+            }
+            else if (msg_split[1].equals("globalDelete")){
+                handleGlobalDelete(msgReceived);
             }
 
             return;
@@ -521,7 +569,7 @@ public class SimpleDhtProvider extends ContentProvider {
 
                     socket.close();
                 }
-                else if (msgs[1].equals("forwardQuery")){
+                else if (msgs[1].equals("forwardQuery") || msgs[1].equals("deleteFile")){
                     REMOTE_PORT = String.valueOf((Integer.parseInt(next_id) * 2));
                     Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
                             Integer.parseInt(REMOTE_PORT));
@@ -549,7 +597,7 @@ public class SimpleDhtProvider extends ContentProvider {
 
                     socket.close();
                 }
-                else if (msgs[1].equals("globalQuery")){
+                else if (msgs[1].equals("globalQuery") || msgs[1].equals("globalDelete")){
                     REMOTE_PORT = String.valueOf((Integer.parseInt(next_id) * 2));
                     Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
                             Integer.parseInt(REMOTE_PORT));
